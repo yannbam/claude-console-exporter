@@ -6,7 +6,6 @@ import json
 import os
 import re
 import socket
-import subprocess
 import shutil
 import sys
 import time
@@ -16,9 +15,6 @@ from typing import Any
 from urllib import error, request
 
 
-COOKIE_LINE_RE = re.compile(
-    r"^(?P<name>[^=]+)=(?P<value>.*) \(domain: (?P<domain>[^,]+), path: (?P<path>[^)]+)\)$"
-)
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 
@@ -36,69 +32,18 @@ def write_json(path: Path, payload: Any) -> None:
     os.replace(tmp, path)
 
 
-@dataclass(frozen=True)
-class BrowserCookie:
-    name: str
-    value: str
-    domain: str
-    path: str
-
-
-def parse_cookie_dump(raw: str) -> list[BrowserCookie]:
-    cookies: list[BrowserCookie] = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line or line.startswith("###"):
+def parse_cookie_header(raw: str) -> dict[str, str]:
+    cookies: dict[str, str] = {}
+    for chunk in raw.split(";"):
+        piece = chunk.strip()
+        if not piece or "=" not in piece:
             continue
-        m = COOKIE_LINE_RE.match(line)
-        if not m:
-            continue
-        cookies.append(
-            BrowserCookie(
-                name=m.group("name"),
-                value=m.group("value"),
-                domain=m.group("domain"),
-                path=m.group("path"),
-            )
-        )
+        key, value = piece.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if key:
+            cookies[key] = value
     return cookies
-
-
-def read_playwright_cookies(pwcli_path: Path) -> tuple[dict[str, str], str]:
-    if not pwcli_path.exists():
-        raise RuntimeError(f"Playwright wrapper not found: {pwcli_path}")
-    env = os.environ.copy()
-    env.setdefault("NPM_CONFIG_CACHE", "/tmp/.npm-cache")
-    proc = subprocess.run(
-        ["bash", str(pwcli_path), "cookie-list"],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"Failed to read browser cookies: {proc.stderr.strip()}")
-    parsed = parse_cookie_dump(proc.stdout)
-    cookies_by_name: dict[str, str] = {}
-    claude_cookie_parts: list[str] = []
-    seen_cookie_names: set[str] = set()
-    for cookie in parsed:
-        cookies_by_name[cookie.name] = cookie.value
-    for cookie in parsed:
-        if "claude.com" not in cookie.domain:
-            continue
-        if cookie.name in seen_cookie_names:
-            continue
-        seen_cookie_names.add(cookie.name)
-        claude_cookie_parts.append(f"{cookie.name}={cookie.value}")
-    cookie_header = "; ".join(claude_cookie_parts)
-
-    for required in ("sessionKey", "routingHint"):
-        if required not in cookies_by_name:
-            raise RuntimeError(
-                f"Missing required cookie '{required}'. Ensure the visible browser is logged in."
-            )
-    return cookies_by_name, cookie_header
 
 
 @dataclass(frozen=True)
@@ -304,7 +249,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Export Claude Workbench prompts, revisions, and per-revision evaluations."
     )
-    default_pwcli = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "skills" / "playwright" / "scripts" / "playwright_cli.sh"
     parser.add_argument("--org-id", help="Organization UUID. Defaults to cookie lastActiveOrg.")
     parser.add_argument(
         "--prompt-id",
@@ -323,9 +267,12 @@ def parse_args() -> argparse.Namespace:
         help="Always re-download prompt data even when local files appear up to date.",
     )
     parser.add_argument(
-        "--pwcli-path",
-        default=str(default_pwcli),
-        help="Path to playwright_cli.sh.",
+        "--cookie-header",
+        default=os.environ.get("CLAUDE_COOKIE_HEADER", ""),
+        help=(
+            "Raw Cookie header copied from a platform.claude.com API request. "
+            "Can also be provided via CLAUDE_COOKIE_HEADER."
+        ),
     )
     parser.add_argument(
         "--timeout-seconds",
@@ -353,10 +300,25 @@ def main() -> int:
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    cookies, cookie_header = read_playwright_cookies(Path(args.pwcli_path))
+    cookie_header = (args.cookie_header or "").strip()
+    if not cookie_header:
+        raise RuntimeError(
+            "Missing cookie header. Pass --cookie-header '<cookie string>' "
+            "or set CLAUDE_COOKIE_HEADER."
+        )
+    cookies = parse_cookie_header(cookie_header)
+    for required in ("sessionKey", "routingHint"):
+        if required not in cookies:
+            raise RuntimeError(
+                f"Cookie header is missing '{required}'. Copy the full Cookie header "
+                "from a platform.claude.com/api network request."
+            )
+
     org_id = args.org_id or cookies.get("lastActiveOrg")
     if not org_id:
-        raise RuntimeError("Missing --org-id and lastActiveOrg cookie is not available.")
+        raise RuntimeError(
+            "Missing organization id. Provide --org-id or include lastActiveOrg in cookie header."
+        )
 
     api = ClaudeApi(
         config=ApiConfig(
