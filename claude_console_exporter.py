@@ -130,7 +130,7 @@ class ExportResult:
     evaluations: int
 
 
-class WorkbenchExporter:
+class ClaudeConsoleExporter:
     def __init__(
         self,
         api: ClaudeApi,
@@ -251,7 +251,7 @@ class WorkbenchExporter:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Export Claude Workbench prompts, revisions, and per-revision evaluations."
+        description="Export Claude Console prompts, revisions, and per-revision evaluations."
     )
     parser.add_argument("--org-id", help="Organization UUID. Defaults to cookie lastActiveOrg.")
     parser.add_argument(
@@ -262,7 +262,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-root",
-        default="output/workbench-export",
+        default="output/claude-console-export",
         help="Root output directory.",
     )
     parser.add_argument(
@@ -339,7 +339,7 @@ def main() -> int:
         ),
         cookie_header=cookie_header,
     )
-    exporter = WorkbenchExporter(
+    exporter = ClaudeConsoleExporter(
         api=api,
         org_id=org_id,
         output_root=output_root,
@@ -398,7 +398,7 @@ def main() -> int:
     if failed_prompt_ids:
         retry_cmd_parts = [
             "python3",
-            "export_workbench.py",
+            "claude_console_exporter.py",
             "--cookie-header",
             "'PASTE_COOKIE_VALUE'",
             "--output-root",

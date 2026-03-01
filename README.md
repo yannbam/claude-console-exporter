@@ -1,6 +1,6 @@
-# Workbench Exporter
+# claude-console-exporter
 
-Exports your `platform.claude.com` Workbench data to local JSON files:
+Exports your `platform.claude.com` Claude Console data to local JSON files:
 
 - prompt metadata (`prompt.json`)
 - all revisions (`revisions/<revision_id>.json`)
@@ -15,7 +15,7 @@ Exports your `platform.claude.com` Workbench data to local JSON files:
 5. Run:
 
 ```bash
-python3 export_workbench.py --cookie-header 'PASTE_COOKIE_VALUE'
+python3 claude_console_exporter.py --cookie-header 'PASTE_COOKIE_VALUE'
 ```
 
 Notes:
@@ -28,19 +28,19 @@ Notes:
 Default incremental sync (download only changed/new prompts):
 
 ```bash
-python3 export_workbench.py --cookie-header 'PASTE_COOKIE_VALUE'
+python3 claude_console_exporter.py --cookie-header 'PASTE_COOKIE_VALUE'
 ```
 
 Force full re-download for prompts being processed:
 
 ```bash
-python3 export_workbench.py --cookie-header 'PASTE_COOKIE_VALUE' --force-refresh
+python3 claude_console_exporter.py --cookie-header 'PASTE_COOKIE_VALUE' --force-refresh
 ```
 
 Export only selected prompts:
 
 ```bash
-python3 export_workbench.py \
+python3 claude_console_exporter.py \
   --cookie-header 'PASTE_COOKIE_VALUE' \
   --prompt-id <prompt_id_1> \
   --prompt-id <prompt_id_2>
@@ -66,7 +66,7 @@ On failures, the script prints:
 ## Output Layout
 
 ```text
-output/workbench-export/
+output/claude-console-export/
   <prompt-slug>-<prompt-id>/
     prompt.json
     revisions/
@@ -85,3 +85,12 @@ output/workbench-export/
 This project is provided as-is and you use it at your own risk. Always review
 exported data and keep your own backups. The authors are not responsible for
 data loss, account issues, or other consequences of use.
+
+```text
+   _____ _                 _        _____          _
+  / ____| |               | |      / ____|        | |
+ | |    | | __ _ _   _  __| | ___ | |     ___   __| | _____  __
+ | |    | |/ _` | | | |/ _` |/ _ \| |    / _ \ / _` |/ _ \ \/ /
+ | |____| | (_| | |_| | (_| |  __/| |___| (_) | (_| |  __/>  <
+  \_____|_|\__,_|\__,_|\__,_|\___| \_____\___/ \__,_|\___/_/\_\
+```
