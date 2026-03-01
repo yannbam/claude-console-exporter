@@ -79,3 +79,9 @@ output/workbench-export/
 
 - `0`: success (no failed prompts)
 - `2`: partial failure or fatal configuration/auth error
+
+## Disclaimer
+
+This project is provided as-is and you use it at your own risk. Always review
+exported data and keep your own backups. The authors are not responsible for
+data loss, account issues, or other consequences of use.
