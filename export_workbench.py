@@ -33,6 +33,9 @@ def write_json(path: Path, payload: Any) -> None:
 
 
 def parse_cookie_header(raw: str) -> dict[str, str]:
+    raw = raw.strip()
+    if raw.lower().startswith("cookie:"):
+        raw = raw.split(":", 1)[1].strip()
     cookies: dict[str, str] = {}
     for chunk in raw.split(";"):
         piece = chunk.strip()
@@ -275,6 +278,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--cookie-header-file",
+        default="",
+        help=(
+            "Path to a text file containing the Cookie header value. "
+            "Useful to avoid shell quoting issues."
+        ),
+    )
+    parser.add_argument(
         "--timeout-seconds",
         type=float,
         default=60.0,
@@ -300,11 +311,23 @@ def main() -> int:
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    cookie_header = (args.cookie_header or "").strip()
+    cookie_header = ""
+    if args.cookie_header_file:
+        cookie_header = Path(args.cookie_header_file).read_text(encoding="utf-8").strip()
+    elif args.cookie_header:
+        cookie_header = args.cookie_header.strip()
+
     if not cookie_header:
         raise RuntimeError(
-            "Missing cookie header. Pass --cookie-header '<cookie string>' "
-            "or set CLAUDE_COOKIE_HEADER."
+            "Missing cookie header.\n"
+            "Pass --cookie-header '<cookie string>' (IMPORTANT: wrap in single quotes),\n"
+            "or pass --cookie-header-file /path/to/cookie.txt,\n"
+            "or set CLAUDE_COOKIE_HEADER.\n"
+            "How to get it quickly:\n"
+            "1) Open platform.claude.com in your browser.\n"
+            "2) Open DevTools -> Network, then refresh the page.\n"
+            "3) Open any request to https://platform.claude.com/api/...\n"
+            "4) Copy the 'Cookie' request header VALUE only (not full JSON)."
         )
     cookies = parse_cookie_header(cookie_header)
     for required in ("sessionKey", "routingHint"):
