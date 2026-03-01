@@ -61,7 +61,7 @@ Otherwise, the full prompt dataset is re-downloaded.
 On failures, the script prints:
 
 - `failed_prompt_ids: ...`
-- `retry_command:` with `--prompt-id ...` args ready to copy/paste.
+- `rerun_tip: ...` reminding you to run the same command again.
 
 ## Output Layout
 
