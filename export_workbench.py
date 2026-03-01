@@ -271,18 +271,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--cookie-header",
-        default=os.environ.get("CLAUDE_COOKIE_HEADER", ""),
-        help=(
-            "Raw Cookie header copied from a platform.claude.com API request. "
-            "Can also be provided via CLAUDE_COOKIE_HEADER."
-        ),
-    )
-    parser.add_argument(
-        "--cookie-header-file",
         default="",
         help=(
-            "Path to a text file containing the Cookie header value. "
-            "Useful to avoid shell quoting issues."
+            "Cookie header VALUE from a platform.claude.com API request "
+            "(use DevTools 'Copy Value'). Wrap in single quotes."
         ),
     )
     parser.add_argument(
@@ -311,23 +303,18 @@ def main() -> int:
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
-    cookie_header = ""
-    if args.cookie_header_file:
-        cookie_header = Path(args.cookie_header_file).read_text(encoding="utf-8").strip()
-    elif args.cookie_header:
-        cookie_header = args.cookie_header.strip()
+    cookie_header = (args.cookie_header or "").strip()
 
     if not cookie_header:
         raise RuntimeError(
             "Missing cookie header.\n"
-            "Pass --cookie-header '<cookie string>' (IMPORTANT: wrap in single quotes),\n"
-            "or pass --cookie-header-file /path/to/cookie.txt,\n"
-            "or set CLAUDE_COOKIE_HEADER.\n"
+            "Pass --cookie-header '<cookie string>' (IMPORTANT: wrap in single quotes).\n"
             "How to get it quickly:\n"
             "1) Open platform.claude.com in your browser.\n"
             "2) Open DevTools -> Network, then refresh the page.\n"
             "3) Open any request to https://platform.claude.com/api/...\n"
-            "4) Copy the 'Cookie' request header VALUE only (not full JSON)."
+            "4) In Request Headers, right-click Cookie -> Copy Value.\n"
+            "5) Use that exact value as --cookie-header '...'."
         )
     cookies = parse_cookie_header(cookie_header)
     for required in ("sessionKey", "routingHint"):
