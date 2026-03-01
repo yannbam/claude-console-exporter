@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import socket
 import shutil
 import sys
@@ -363,6 +364,7 @@ def main() -> int:
     success_count = 0
     skipped_count = 0
     failure_count = 0
+    failed_prompt_ids: list[str] = []
     total_revisions = 0
     total_evaluations = 0
 
@@ -385,6 +387,7 @@ def main() -> int:
                 )
         except Exception as exc:
             failure_count += 1
+            failed_prompt_ids.append(pid)
             print(f"[error] {pid}: {exc}", file=sys.stderr)
 
     print(
@@ -392,6 +395,37 @@ def main() -> int:
         f"prompts_failed={failure_count} "
         f"revisions={total_revisions} evaluations={total_evaluations}"
     )
+    if failed_prompt_ids:
+        retry_cmd_parts = [
+            "python3",
+            "export_workbench.py",
+            "--cookie-header",
+            "'PASTE_COOKIE_VALUE'",
+            "--output-root",
+            shlex.quote(str(args.output_root)),
+        ]
+        if args.org_id:
+            retry_cmd_parts.extend(["--org-id", shlex.quote(args.org_id)])
+        if args.force_refresh:
+            retry_cmd_parts.append("--force-refresh")
+        if args.timeout_seconds != 60.0:
+            retry_cmd_parts.extend(
+                ["--timeout-seconds", shlex.quote(str(args.timeout_seconds))]
+            )
+        if args.max_retries != 5:
+            retry_cmd_parts.extend(["--max-retries", shlex.quote(str(args.max_retries))])
+        if args.retry_backoff_seconds != 0.8:
+            retry_cmd_parts.extend(
+                [
+                    "--retry-backoff-seconds",
+                    shlex.quote(str(args.retry_backoff_seconds)),
+                ]
+            )
+        for failed_id in failed_prompt_ids:
+            retry_cmd_parts.extend(["--prompt-id", failed_id])
+        print("failed_prompt_ids:", " ".join(failed_prompt_ids))
+        print("retry_command:")
+        print(" ".join(retry_cmd_parts))
     return 0 if failure_count == 0 else 2
 
 
