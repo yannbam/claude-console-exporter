@@ -67,7 +67,7 @@ On failures, the script prints:
 
 ```text
 output/claude-console-export/
-  <prompt-slug>-<prompt-id>/
+  <prompt-slug>--<prompt-id>/
     prompt.json
     revisions/
       <revision-id>.json

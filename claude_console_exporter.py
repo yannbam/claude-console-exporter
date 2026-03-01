@@ -152,12 +152,25 @@ class ClaudeConsoleExporter:
         return [p["id"] for p in prompts if isinstance(p, dict) and p.get("id")]
 
     def _resolve_prompt_dir(self, prompt_id: str, prompt_name: str) -> Path:
-        desired = self.output_root / f"{slugify(prompt_name)}-{prompt_id}"
+        desired = self.output_root / f"{slugify(prompt_name)}--{prompt_id}"
         if desired.exists():
             return desired
-        matches = sorted(self.output_root.glob(f"*-{prompt_id}"))
-        if matches:
-            return matches[0]
+
+        new_style_matches = sorted(self.output_root.glob(f"*--{prompt_id}"))
+        if new_style_matches:
+            return new_style_matches[0]
+
+        legacy_matches = sorted(self.output_root.glob(f"*-{prompt_id}"))
+        if legacy_matches:
+            legacy = legacy_matches[0]
+            # Migrate old "<slug>-<uuid>" directory names to "<slug>--<uuid>".
+            if legacy != desired and not desired.exists():
+                try:
+                    legacy.rename(desired)
+                    return desired
+                except OSError:
+                    return legacy
+            return legacy
         return desired
 
     @staticmethod
