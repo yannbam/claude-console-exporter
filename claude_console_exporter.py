@@ -156,21 +156,9 @@ class ClaudeConsoleExporter:
         if desired.exists():
             return desired
 
-        new_style_matches = sorted(self.output_root.glob(f"*--{prompt_id}"))
-        if new_style_matches:
-            return new_style_matches[0]
-
-        legacy_matches = sorted(self.output_root.glob(f"*-{prompt_id}"))
-        if legacy_matches:
-            legacy = legacy_matches[0]
-            # Migrate old "<slug>-<uuid>" directory names to "<slug>--<uuid>".
-            if legacy != desired and not desired.exists():
-                try:
-                    legacy.rename(desired)
-                    return desired
-                except OSError:
-                    return legacy
-            return legacy
+        matches = sorted(self.output_root.glob(f"*--{prompt_id}"))
+        if matches:
+            return matches[0]
         return desired
 
     @staticmethod
