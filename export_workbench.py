@@ -5,10 +5,10 @@ import argparse
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -103,7 +103,7 @@ def read_playwright_cookies(pwcli_path: Path) -> tuple[dict[str, str], str]:
 @dataclass(frozen=True)
 class ApiConfig:
     base_url: str = "https://platform.claude.com"
-    timeout_seconds: float = 30.0
+    timeout_seconds: float = 60.0
     max_retries: int = 5
     retry_backoff_seconds: float = 0.8
 
@@ -133,6 +133,12 @@ class ClaudeApi:
             headers["content-type"] = "application/json"
             data = json.dumps(body).encode("utf-8")
 
+        def should_retry(attempt: int) -> bool:
+            return attempt < self.config.max_retries
+
+        def backoff_sleep(attempt: int) -> None:
+            time.sleep(self.config.retry_backoff_seconds * (2**attempt))
+
         for attempt in range(self.config.max_retries + 1):
             req = request.Request(url=url, method=method, data=data, headers=headers)
             try:
@@ -142,15 +148,25 @@ class ClaudeApi:
             except error.HTTPError as exc:
                 status = exc.code
                 body_preview = exc.read().decode("utf-8", errors="replace")[:300]
-                if status in RETRYABLE_STATUS and attempt < self.config.max_retries:
-                    time.sleep(self.config.retry_backoff_seconds * (2**attempt))
+                if status in RETRYABLE_STATUS and should_retry(attempt):
+                    backoff_sleep(attempt)
                     continue
                 raise RuntimeError(
                     f"{method} {path} failed with HTTP {status}: {body_preview}"
                 ) from exc
             except error.URLError as exc:
-                if attempt < self.config.max_retries:
-                    time.sleep(self.config.retry_backoff_seconds * (2**attempt))
+                if should_retry(attempt):
+                    backoff_sleep(attempt)
+                    continue
+                raise RuntimeError(f"{method} {path} failed: {exc}") from exc
+            except (TimeoutError, socket.timeout) as exc:
+                if should_retry(attempt):
+                    backoff_sleep(attempt)
+                    continue
+                raise RuntimeError(f"{method} {path} timed out: {exc}") from exc
+            except OSError as exc:
+                if "timed out" in str(exc).lower() and should_retry(attempt):
+                    backoff_sleep(attempt)
                     continue
                 raise RuntimeError(f"{method} {path} failed: {exc}") from exc
 
@@ -169,12 +185,12 @@ class WorkbenchExporter:
         api: ClaudeApi,
         org_id: str,
         output_root: Path,
-        overwrite: bool = False,
+        skip_existing: bool = False,
     ) -> None:
         self.api = api
         self.org_id = org_id
         self.output_root = output_root
-        self.overwrite = overwrite
+        self.skip_existing = skip_existing
 
     def list_prompt_ids(self) -> list[str]:
         prompts = self.api.request_json(
@@ -199,7 +215,7 @@ class WorkbenchExporter:
         evaluations_dir.mkdir(parents=True, exist_ok=True)
 
         prompt_path = prompt_dir / "prompt.json"
-        if self.overwrite or not prompt_path.exists():
+        if not (self.skip_existing and prompt_path.exists()):
             write_json(prompt_path, prompt)
 
         compact = self.api.request_json(
@@ -219,14 +235,14 @@ class WorkbenchExporter:
             revision_count += 1
 
             revision_path = revisions_dir / f"{rev_id}.json"
-            if self.overwrite or not revision_path.exists():
+            if not (self.skip_existing and revision_path.exists()):
                 revision_full = self.api.request_json(
                     f"/api/organizations/{self.org_id}/workbench/prompts/{prompt_id}/revisions/{rev_id}"
                 )
                 write_json(revision_path, revision_full)
 
             evaluations_path = evaluations_dir / f"{rev_id}.json"
-            if self.overwrite or not evaluations_path.exists():
+            if not (self.skip_existing and evaluations_path.exists()):
                 evaluations = self.api.request_json(
                     f"/api/organizations/{self.org_id}/workbench/revisions/{rev_id}/evaluations/list"
                 )
@@ -270,16 +286,33 @@ def parse_args() -> argparse.Namespace:
         default="output/workbench-export",
         help="Root output directory.",
     )
-    parser.add_argument("--workers", type=int, default=4, help="Parallel prompt workers.")
     parser.add_argument(
-        "--overwrite",
+        "--skip-existing",
         action="store_true",
-        help="Overwrite existing prompt/revision/evaluation files.",
+        help="Skip writing files that already exist.",
     )
     parser.add_argument(
         "--pwcli-path",
         default=str(default_pwcli),
         help="Path to playwright_cli.sh.",
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=60.0,
+        help="HTTP request timeout in seconds.",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=5,
+        help="Max retries for retryable HTTP/network failures.",
+    )
+    parser.add_argument(
+        "--retry-backoff-seconds",
+        type=float,
+        default=0.8,
+        help="Base retry backoff in seconds (exponential).",
     )
     return parser.parse_args()
 
@@ -295,14 +328,18 @@ def main() -> int:
         raise RuntimeError("Missing --org-id and lastActiveOrg cookie is not available.")
 
     api = ClaudeApi(
-        config=ApiConfig(),
+        config=ApiConfig(
+            timeout_seconds=args.timeout_seconds,
+            max_retries=max(0, args.max_retries),
+            retry_backoff_seconds=max(0.0, args.retry_backoff_seconds),
+        ),
         cookie_header=cookie_header,
     )
     exporter = WorkbenchExporter(
         api=api,
         org_id=org_id,
         output_root=output_root,
-        overwrite=args.overwrite,
+        skip_existing=args.skip_existing,
     )
 
     prompt_ids: list[str]
@@ -320,43 +357,24 @@ def main() -> int:
         print("No prompts to export.")
         return 0
 
-    workers = max(1, args.workers)
     success_count = 0
     failure_count = 0
     total_revisions = 0
     total_evaluations = 0
 
-    if workers == 1 or len(prompt_ids) == 1:
-        for pid in prompt_ids:
-            try:
-                result = exporter.export_prompt(pid)
-                success_count += 1
-                total_revisions += result.revisions
-                total_evaluations += result.evaluations
-                print(
-                    f"[ok] {result.prompt_id} ({result.prompt_name}) "
-                    f"revisions={result.revisions} evaluations={result.evaluations}"
-                )
-            except Exception as exc:
-                failure_count += 1
-                print(f"[error] {pid}: {exc}", file=sys.stderr)
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {pool.submit(exporter.export_prompt, pid): pid for pid in prompt_ids}
-            for fut in as_completed(futures):
-                pid = futures[fut]
-                try:
-                    result = fut.result()
-                    success_count += 1
-                    total_revisions += result.revisions
-                    total_evaluations += result.evaluations
-                    print(
-                        f"[ok] {result.prompt_id} ({result.prompt_name}) "
-                        f"revisions={result.revisions} evaluations={result.evaluations}"
-                    )
-                except Exception as exc:
-                    failure_count += 1
-                    print(f"[error] {pid}: {exc}", file=sys.stderr)
+    for pid in prompt_ids:
+        try:
+            result = exporter.export_prompt(pid)
+            success_count += 1
+            total_revisions += result.revisions
+            total_evaluations += result.evaluations
+            print(
+                f"[ok] {result.prompt_id} ({result.prompt_name}) "
+                f"revisions={result.revisions} evaluations={result.evaluations}"
+            )
+        except Exception as exc:
+            failure_count += 1
+            print(f"[error] {pid}: {exc}", file=sys.stderr)
 
     print(
         f"done prompts_ok={success_count} prompts_failed={failure_count} "
