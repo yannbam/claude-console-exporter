@@ -321,7 +321,7 @@ def main() -> int:
     for required in ("sessionKey", "routingHint"):
         if required not in cookies:
             raise RuntimeError(
-                f"Cookie header is missing '{required}'. Copy the full Cookie header "
+                f"Cookie header is missing '{required}'. Copy the Cookie header VALUE "
                 "from a platform.claude.com/api network request."
             )
 
