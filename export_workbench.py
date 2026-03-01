@@ -7,6 +7,7 @@ import os
 import re
 import socket
 import subprocess
+import shutil
 import sys
 import time
 from dataclasses import dataclass
@@ -175,6 +176,7 @@ class ClaudeApi:
 class ExportResult:
     prompt_id: str
     prompt_name: str
+    downloaded: bool
     revisions: int
     evaluations: int
 
@@ -185,12 +187,12 @@ class WorkbenchExporter:
         api: ClaudeApi,
         org_id: str,
         output_root: Path,
-        skip_existing: bool = False,
+        force_refresh: bool = False,
     ) -> None:
         self.api = api
         self.org_id = org_id
         self.output_root = output_root
-        self.skip_existing = skip_existing
+        self.force_refresh = force_refresh
 
     def list_prompt_ids(self) -> list[str]:
         prompts = self.api.request_json(
@@ -200,6 +202,30 @@ class WorkbenchExporter:
             raise RuntimeError("Prompt list endpoint did not return an array.")
         return [p["id"] for p in prompts if isinstance(p, dict) and p.get("id")]
 
+    def _resolve_prompt_dir(self, prompt_id: str, prompt_name: str) -> Path:
+        desired = self.output_root / f"{slugify(prompt_name)}-{prompt_id}"
+        if desired.exists():
+            return desired
+        matches = sorted(self.output_root.glob(f"*-{prompt_id}"))
+        if matches:
+            return matches[0]
+        return desired
+
+    @staticmethod
+    def _json_file_stems(path: Path) -> set[str]:
+        if not path.exists():
+            return set()
+        return {p.stem for p in path.glob("*.json") if p.is_file()}
+
+    def _is_prompt_synced(self, prompt_dir: Path, remote_revision_ids: list[str]) -> bool:
+        prompt_path = prompt_dir / "prompt.json"
+        if not prompt_path.exists():
+            return False
+        remote_set = set(remote_revision_ids)
+        local_revision_ids = self._json_file_stems(prompt_dir / "revisions")
+        local_evaluation_ids = self._json_file_stems(prompt_dir / "evaluations")
+        return local_revision_ids == remote_set and local_evaluation_ids == remote_set
+
     def export_prompt(self, prompt_id: str) -> ExportResult:
         prompt = self.api.request_json(
             f"/api/organizations/{self.org_id}/workbench/prompts/{prompt_id}"
@@ -208,16 +234,6 @@ class WorkbenchExporter:
             raise RuntimeError(f"Prompt {prompt_id}: prompt endpoint did not return an object.")
 
         prompt_name = str(prompt.get("name") or "untitled")
-        prompt_dir = self.output_root / f"{slugify(prompt_name)}-{prompt_id}"
-        revisions_dir = prompt_dir / "revisions"
-        evaluations_dir = prompt_dir / "evaluations"
-        revisions_dir.mkdir(parents=True, exist_ok=True)
-        evaluations_dir.mkdir(parents=True, exist_ok=True)
-
-        prompt_path = prompt_dir / "prompt.json"
-        if not (self.skip_existing and prompt_path.exists()):
-            write_json(prompt_path, prompt)
-
         compact = self.api.request_json(
             f"/api/organizations/{self.org_id}/workbench/prompts/{prompt_id}/revisions?compact=true"
         )
@@ -225,45 +241,60 @@ class WorkbenchExporter:
             raise RuntimeError(
                 f"Prompt {prompt_id}: revisions endpoint did not return an array."
             )
+        remote_revision_ids = [
+            revision["id"]
+            for revision in compact
+            if isinstance(revision, dict) and revision.get("id")
+        ]
+
+        prompt_dir = self._resolve_prompt_dir(prompt_id, prompt_name)
+        revisions_dir = prompt_dir / "revisions"
+        evaluations_dir = prompt_dir / "evaluations"
+        if (not self.force_refresh) and self._is_prompt_synced(prompt_dir, remote_revision_ids):
+            return ExportResult(
+                prompt_id=prompt_id,
+                prompt_name=prompt_name,
+                downloaded=False,
+                revisions=len(remote_revision_ids),
+                evaluations=0,
+            )
+
+        prompt_dir.mkdir(parents=True, exist_ok=True)
+        if revisions_dir.exists():
+            shutil.rmtree(revisions_dir)
+        if evaluations_dir.exists():
+            shutil.rmtree(evaluations_dir)
+        revisions_dir.mkdir(parents=True, exist_ok=True)
+        evaluations_dir.mkdir(parents=True, exist_ok=True)
+        write_json(prompt_dir / "prompt.json", prompt)
 
         revision_count = 0
         evaluation_count = 0
-        for revision in compact:
-            if not isinstance(revision, dict) or not revision.get("id"):
-                continue
-            rev_id = revision["id"]
+        for rev_id in remote_revision_ids:
             revision_count += 1
 
             revision_path = revisions_dir / f"{rev_id}.json"
-            if not (self.skip_existing and revision_path.exists()):
-                revision_full = self.api.request_json(
-                    f"/api/organizations/{self.org_id}/workbench/prompts/{prompt_id}/revisions/{rev_id}"
-                )
-                write_json(revision_path, revision_full)
+            revision_full = self.api.request_json(
+                f"/api/organizations/{self.org_id}/workbench/prompts/{prompt_id}/revisions/{rev_id}"
+            )
+            write_json(revision_path, revision_full)
 
             evaluations_path = evaluations_dir / f"{rev_id}.json"
-            if not (self.skip_existing and evaluations_path.exists()):
-                evaluations = self.api.request_json(
-                    f"/api/organizations/{self.org_id}/workbench/revisions/{rev_id}/evaluations/list"
+            evaluations = self.api.request_json(
+                f"/api/organizations/{self.org_id}/workbench/revisions/{rev_id}/evaluations/list"
+            )
+            if not isinstance(evaluations, list):
+                raise RuntimeError(
+                    f"Prompt {prompt_id} revision {rev_id}: evaluations endpoint "
+                    "did not return an array."
                 )
-                if not isinstance(evaluations, list):
-                    raise RuntimeError(
-                        f"Prompt {prompt_id} revision {rev_id}: evaluations endpoint "
-                        "did not return an array."
-                    )
-                write_json(evaluations_path, evaluations)
-                evaluation_count += len(evaluations)
-            else:
-                try:
-                    existing = json.loads(evaluations_path.read_text(encoding="utf-8"))
-                    if isinstance(existing, list):
-                        evaluation_count += len(existing)
-                except Exception:
-                    pass
+            write_json(evaluations_path, evaluations)
+            evaluation_count += len(evaluations)
 
         return ExportResult(
             prompt_id=prompt_id,
             prompt_name=prompt_name,
+            downloaded=True,
             revisions=revision_count,
             evaluations=evaluation_count,
         )
@@ -287,9 +318,9 @@ def parse_args() -> argparse.Namespace:
         help="Root output directory.",
     )
     parser.add_argument(
-        "--skip-existing",
+        "--force-refresh",
         action="store_true",
-        help="Skip writing files that already exist.",
+        help="Always re-download prompt data even when local files appear up to date.",
     )
     parser.add_argument(
         "--pwcli-path",
@@ -339,7 +370,7 @@ def main() -> int:
         api=api,
         org_id=org_id,
         output_root=output_root,
-        skip_existing=args.skip_existing,
+        force_refresh=args.force_refresh,
     )
 
     prompt_ids: list[str]
@@ -358,6 +389,7 @@ def main() -> int:
         return 0
 
     success_count = 0
+    skipped_count = 0
     failure_count = 0
     total_revisions = 0
     total_evaluations = 0
@@ -365,19 +397,27 @@ def main() -> int:
     for pid in prompt_ids:
         try:
             result = exporter.export_prompt(pid)
-            success_count += 1
             total_revisions += result.revisions
             total_evaluations += result.evaluations
-            print(
-                f"[ok] {result.prompt_id} ({result.prompt_name}) "
-                f"revisions={result.revisions} evaluations={result.evaluations}"
-            )
+            if result.downloaded:
+                success_count += 1
+                print(
+                    f"[ok] {result.prompt_id} ({result.prompt_name}) "
+                    f"revisions={result.revisions} evaluations={result.evaluations}"
+                )
+            else:
+                skipped_count += 1
+                print(
+                    f"[skip] {result.prompt_id} ({result.prompt_name}) "
+                    f"revisions={result.revisions}"
+                )
         except Exception as exc:
             failure_count += 1
             print(f"[error] {pid}: {exc}", file=sys.stderr)
 
     print(
-        f"done prompts_ok={success_count} prompts_failed={failure_count} "
+        f"done prompts_downloaded={success_count} prompts_skipped={skipped_count} "
+        f"prompts_failed={failure_count} "
         f"revisions={total_revisions} evaluations={total_evaluations}"
     )
     return 0 if failure_count == 0 else 2
